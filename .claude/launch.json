@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "repo-oracle api",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "cd /Users/pronoypant/repo-oracle && set -a && . ./.env && set +a && exec .venv/bin/uvicorn repo_oracle.app:app --port 8010 --reload"
+      ],
+      "port": 8010
+    },
+    {
+      "name": "repo-oracle ui",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "cd /Users/pronoypant/repo-oracle/web && ORACLE_API=http://localhost:8010 exec npx vite --port 5173 --strictPort"
+      ],
+      "port": 5173
+    }
+  ]
+}

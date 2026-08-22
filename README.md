@@ -15,6 +15,13 @@ are the map tier.</sub>
 
 Built for the AI-FDE assignment, option 2 (code documentation assistant).
 
+**[42-second demo video](docs/demo.mp4)** (click to play, no sound). It runs the whole loop
+against this project's own predecessor repo: ask, read the cited answer, open a citation into
+the source panel, click a second citation and watch the target line beat, ask a follow-up
+that only makes sense in context ("and what happens when that check fails?"), and finally ask
+something the repository has no answer for, where it says so and points at where it looked
+instead of inventing one.
+
 ---
 
 ## Quick start
@@ -96,6 +103,18 @@ flowchart LR
 ---
 
 ## The decisions, and why
+
+Every row below is argued out in the sections that follow. The short version, for anyone who
+wants the shape before the reasoning:
+
+| Decision | Considered | Chose | In one line |
+|---|---|---|---|
+| LLM | Claude Sonnet, GPT-4o-class, Gemini Flash, a local Llama | **Gemini Flash** via litellm | The only one with a free tier good enough that a reviewer runs this with no paid key; provider is one env var |
+| Embedding model | OpenAI `text-embedding-3`, Voyage `voyage-code-3`, local `bge`/`fastembed`, Gemini | **`gemini-embedding-2`** at 768 dims | Same key as the LLM, no second account; Matryoshka truncation makes 768 free |
+| Vector database | None (numpy brute force), Chroma, Qdrant, Postgres + pgvector | **Chroma**, embedded | A real ANN index without a service to operate; the swap to a server is two functions |
+| Lexical retrieval | Skip it, Elasticsearch/OpenSearch, SQLite FTS5 | **FTS5**, in stdlib `sqlite3` | Half of code questions are identifier lookups, where embeddings are actively worse |
+| Orchestration framework | LangChain, LlamaIndex, Haystack, none | **None** | The pipeline is six functions; a framework would add more code than it removes |
+| Chunking | Fixed token windows, tree-sitter, regex on declarations | **Declaration regex** with window fallback | Code has visible boundaries; a parser per language is not yet paid for |
 
 ### Two tiers of retrieval, because questions come in two shapes
 
@@ -189,16 +208,32 @@ splits `getUserById` into its parts so it also matches a file that only says
 
 ### Model choices
 
-**Gemini Flash for generation, `gemini-embedding-001` at 768 dimensions for retrieval.**
-Everything goes through litellm, so both are `provider/model` strings and switching to
-Anthropic or OpenAI is an env var. The default is Gemini for one reason that beats the
-others: it has a genuinely free tier, so whoever reads this can run it without provisioning
-a paid key. On my own key I would run Sonnet for generation, which is better at the "trace
-this through four files" answers.
+**Gemini Flash for generation, `gemini-embedding-2` at 768 dimensions for retrieval.**
+Everything goes through litellm, so both are `provider/model` strings and switching provider
+is an env var, not a refactor.
 
-Two things I had to find out the hard way and would not have guessed:
+*Generation, what I weighed.* Claude Sonnet is the better model for this specific job, which
+is tracing a mechanism across four files and staying honest about what the excerpts do not
+say, and it is what I would run on my own key. A local Llama through Ollama removes the API
+dependency entirely and I rejected it: quality on grounded code synthesis is materially worse
+and it makes the reviewer install a model server before they can see anything. GPT-4o-class
+sits between the two on both counts. Gemini Flash won on one criterion that beat the rest for
+a submission: a genuinely free tier, so whoever reads this runs it with a key they can get in
+a minute. The cost of that choice is visible in the [rate limits](#rate-limits) section, and
+it is the right trade for a demo and the wrong one for production.
 
-- `gemini-embedding-001` returns 3072 dimensions by default. It is trained with Matryoshka
+*Embeddings, what I weighed.* Voyage `voyage-code-3` is trained on code and is probably the
+best retrieval quality available for this corpus; it needs a second vendor account. OpenAI
+`text-embedding-3-large` is the safe default and needs a second key. A local `bge` or
+`fastembed` model costs nothing per call and removes the rate limit that shapes my ingest,
+at the price of a large model download in the container and worse recall on natural-language
+questions about code. Gemini won for the boring reason that it is the same key as the LLM,
+which halves the setup instructions. Whatever you pick, changing `ORACLE_EMBED_MODEL`
+invalidates existing indexes, since the vectors are no longer comparable.
+
+Three things I had to find out the hard way and would not have guessed:
+
+- Gemini's embedding models return 3072 dimensions by default. It is trained with Matryoshka
   representation learning, so truncating to 768 keeps most of the retrieval quality at a
   quarter of the memory and a quarter of the matmul. That is a free 4x and I take it.
 - Gemini Flash is a thinking model by default, and thinking tokens bill against
@@ -210,6 +245,39 @@ Two things I had to find out the hard way and would not have guessed:
   outright. litellm's `drop_params` strips parameters a given provider will not take, which
   is what keeps `ORACLE_MODEL` a real choice rather than the three models I happened to
   test. Worth knowing before writing "any provider works" in a README.
+
+### No orchestration framework
+
+This is the decision I expect to be questioned hardest, so here is the reasoning rather than
+a preference.
+
+I looked at LangChain and LlamaIndex properly. Both would have given me a document loader, a
+splitter, a vector-store adapter, a retriever interface, and a chain to tie them together.
+Set against what this system actually does, that is: a git clone, a file walk, a regex
+splitter, one `collection.add`, one `collection.query`, a rank fusion, and a prompt. Six
+functions, none of them longer than a screen.
+
+What a framework buys is swappability across implementations you do not have yet, plus a
+vocabulary your next hire already knows. What it costs is an abstraction layer between me and
+the two things that determine whether this product works: exactly what text goes into the
+embedding, and exactly what text goes into the context window. Those are the tuning surfaces.
+`Chunk.embed_text()` in `chunk.py` is four lines and I can read it; the equivalent inside a
+framework's splitter plus node-parser plus service-context is a debugging session with
+someone else's design.
+
+The specific failure I did not want: a retriever interface that quietly normalises scores so
+it can rank hybrid results, when the entire reason my fusion works is that it consumes ranks
+and never compares a BM25 score to a cosine similarity. I would rather own thirty lines of
+RRF I can explain than inherit a `similarity_top_k` whose behaviour I have to go read.
+
+Where the answer flips: the moment this needs agentic retrieval (the model deciding to grep,
+then read a file, then search again), a tool-calling loop is real infrastructure and worth
+adopting rather than writing. That is on the "what next" list, and it is the point at which I
+would reach for a framework, or more likely for the provider's own tool-use API.
+
+litellm is a dependency, not a framework: it normalises one HTTP call across providers and
+has no opinion about my pipeline. That is the trade I want, an adapter at the boundary rather
+than a skeleton through the middle.
 
 ### Prompt and context management
 
