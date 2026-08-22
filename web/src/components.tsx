@@ -18,7 +18,8 @@ export function Answer({ text, onCite }: { text: string; onCite: (c: Citation) =
     return rendered.replace(
       /<code>([\w./-]+\.\w+):(\d+)(?:-(\d+))?<\/code>/g,
       (_m, path, line) =>
-        `<button class="cite" data-path="${path}" data-line="${line}">${path}:${line}</button>`,
+        `<button type="button" class="cite" data-path="${path}" data-line="${line}" ` +
+        `aria-label="Open ${path} at line ${line}">${path}:${line}</button>`,
     )
   }, [text])
 
@@ -28,6 +29,16 @@ export function Answer({ text, onCite }: { text: string; onCite: (c: Citation) =
       onClick={(e) => {
         const el = (e.target as HTMLElement).closest('.cite') as HTMLElement | null
         if (el) onCite({ path: el.dataset.path!, line: Number(el.dataset.line) })
+      }}
+      onKeyDown={(e) => {
+        // Delegation covers click; native <button> turns Enter/Space into a click, so this
+        // only guards the case where a citation ends up on a non-button element.
+        if (e.key !== 'Enter' && e.key !== ' ') return
+        const el = (e.target as HTMLElement).closest('.cite') as HTMLElement | null
+        if (el && el.tagName !== 'BUTTON') {
+          e.preventDefault()
+          onCite({ path: el.dataset.path!, line: Number(el.dataset.line) })
+        }
       }}
       dangerouslySetInnerHTML={{ __html: html }}
     />
@@ -92,10 +103,14 @@ export function SourceViewer({
 
   const lines = file.text.split('\n')
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col" role="region" aria-label={`Source: ${file.path}`}>
       <div className="flex items-center justify-between border-b border-edge px-3 py-2">
         <span className="truncate font-mono text-xs text-neutral-300">{file.path}</span>
-        <button onClick={onClose} className="px-1 text-dim hover:text-neutral-200">
+        <button
+          onClick={onClose}
+          aria-label="Close the source panel"
+          className="rounded px-1 text-dim hover:text-neutral-200"
+        >
           ✕
         </button>
       </div>
@@ -110,7 +125,7 @@ export function SourceViewer({
                 data-hit={n === line ? '1' : undefined}
                 className={hit ? 'bg-emerald-500/10' : undefined}
               >
-                <span className="inline-block w-12 select-none pr-3 text-right text-neutral-600">
+                <span className="inline-block w-12 select-none pr-3 text-right text-gutter">
                   {n}
                 </span>
                 <span className={n === line ? 'text-emerald-200' : 'text-neutral-300'}>{text}</span>
@@ -138,6 +153,19 @@ export function RepoCard({
   return (
     <div
       onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelect()
+        }
+      }}
+      role="button"
+      tabIndex={0}
+      aria-pressed={active}
+      /* A div rather than a button because it contains its own delete button, and nesting
+         a button inside a button is invalid HTML. role + tabIndex + a key handler restore
+         what the native element would have given us; the global :focus-visible rule paints
+         the ring. */
       className={`group cursor-pointer rounded-lg border px-3 py-2 transition-colors ${
         active ? 'border-accent/60 bg-accent/10' : 'border-edge bg-panel hover:border-neutral-600'
       }`}
@@ -149,7 +177,9 @@ export function RepoCard({
             e.stopPropagation()
             onDelete()
           }}
-          className="opacity-0 transition-opacity group-hover:opacity-100 text-dim hover:text-red-400"
+          aria-label={`Remove the index for ${name}`}
+          className="rounded text-dim opacity-0 transition-opacity hover:text-red-400
+                     focus-visible:opacity-100 group-hover:opacity-100"
           title="Remove this index"
         >
           ✕

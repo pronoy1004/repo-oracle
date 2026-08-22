@@ -43,6 +43,12 @@ export default function App() {
     bottom.current?.scrollIntoView({ behavior: 'smooth' })
   }, [turns])
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setFile(null)
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const openCitation = async (c: Citation) => {
     if (!active) return
     setLine(c.line)
@@ -110,9 +116,19 @@ export default function App() {
   }
 
   const current = repos.find((r) => r.id === active)
+  const last = turns[turns.length - 1]
+  const status = busy
+    ? 'Retrieving and answering'
+    : last?.role === 'assistant' && last.text
+      ? `Answer complete, ${last.sources?.length ?? 0} excerpts retrieved`
+      : ''
+
 
   return (
     <div className="flex h-full flex-col">
+      <p className="sr-only" role="status" aria-live="polite">
+        {status}
+      </p>
       <header className="flex items-center justify-between border-b border-edge px-4 py-2.5">
         <div className="flex items-baseline gap-3">
           <span className="font-mono text-sm font-semibold text-accent">repo-oracle</span>
@@ -139,7 +155,8 @@ export default function App() {
               value={ingestUrl}
               onChange={(e) => setIngestUrl(e.target.value)}
               placeholder="https://github.com/owner/repo"
-              className="rounded-md border border-edge bg-panel px-2 py-1.5 text-xs outline-none focus:border-accent"
+              aria-label="Git URL of the repository to index"
+              className="rounded-md border border-edge bg-panel px-2 py-1.5 text-xs focus:border-accent"
             />
             <button
               type="submit"
@@ -150,7 +167,12 @@ export default function App() {
           </form>
 
           {ingestLog.length > 0 && (
-            <div className="max-h-40 overflow-y-auto rounded-md border border-edge bg-panel p-2 font-mono text-[0.65rem] leading-relaxed text-dim">
+            <div
+              role="status"
+              aria-live="polite"
+              aria-label="Indexing progress"
+              className="max-h-40 overflow-y-auto rounded-md border border-edge bg-panel p-2 font-mono text-[0.7rem] leading-relaxed text-dim"
+            >
               {ingestLog.map((l, i) => (
                 <div key={i} className="truncate" title={l}>
                   {l}
@@ -183,16 +205,55 @@ export default function App() {
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto px-6 py-5">
             {!active && (
-              <div className="mx-auto mt-20 max-w-md text-center text-sm text-dim">
-                Index a repository, then ask it anything. Every claim in an answer carries a
-                <span className="mx-1 font-mono text-accent">path:line</span>
-                citation you can click.
+              /* The first thirty seconds decide whether someone trusts this, so the empty
+                 state shows what an answer looks like rather than describing it. */
+              <div className="mx-auto mt-12 max-w-lg sm:mt-20">
+                <h1 className="text-xl font-semibold tracking-tight text-neutral-100">
+                  Ask a codebase a question.
+                </h1>
+                <p className="mt-2 text-sm leading-relaxed text-dim">
+                  Point it at a repository. It reads the code, writes a short summary of the
+                  architecture, and indexes both. Then every answer it gives you cites the
+                  lines it came from.
+                </p>
+
+                <div
+                  aria-hidden="true"
+                  className="mt-6 rounded-lg border border-edge bg-panel/60 p-3.5 text-[0.82rem] leading-relaxed"
+                >
+                  <p className="text-neutral-300">
+                    Routes are registered in{' '}
+                    <span className="cite pointer-events-none">src/flask/app.py:1122</span>, and
+                    dispatched by <code className="font-mono text-neutral-400">full_dispatch_request</code>{' '}
+                    at <span className="cite pointer-events-none">src/flask/app.py:880</span>.
+                  </p>
+                  <p className="mt-2 text-xs text-dim">
+                    Click a citation and that file opens beside the answer, at that line.
+                  </p>
+                </div>
+
+                <ol className="mt-6 flex flex-col gap-1.5 text-sm text-dim">
+                  <li>
+                    <span className="text-neutral-200">Paste a GitHub URL</span> in the panel on
+                    the left.
+                  </li>
+                  <li>
+                    <span className="text-neutral-200">Wait for the index.</span> A few minutes
+                    for a mid-sized repo; progress streams as it goes.
+                  </li>
+                  <li>
+                    <span className="text-neutral-200">Ask, then check the citation.</span> That
+                    is the whole loop.
+                  </li>
+                </ol>
               </div>
             )}
 
             {active && !turns.length && (
               <div className="mx-auto max-w-2xl">
-                <p className="mb-3 text-xs uppercase tracking-wider text-dim">Try asking</p>
+                <p className="mb-3 text-sm text-dim">
+                  Indexed and ready. Something to start with:
+                </p>
                 <div className="flex flex-col gap-2">
                   {SUGGESTIONS.map((s) => (
                     <button
@@ -234,7 +295,10 @@ export default function App() {
           </div>
 
           {error && (
-            <div className="border-t border-red-900/50 bg-red-950/30 px-6 py-2 text-xs text-red-300">
+            <div
+              role="alert"
+              className="border-t border-red-900/50 bg-red-950/30 px-6 py-2 text-xs text-red-300"
+            >
               {error}
             </div>
           )}
@@ -251,8 +315,15 @@ export default function App() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 disabled={!active || busy}
-                placeholder={active ? 'Ask about this codebase…' : 'Index a repository first'}
-                className="flex-1 rounded-lg border border-edge bg-panel px-3 py-2 text-sm outline-none focus:border-accent disabled:opacity-50"
+                placeholder={
+                  active
+                    ? 'Ask about this codebase…'
+                    : repos.length
+                      ? 'Pick a repository on the left to start'
+                      : 'Index a repository first'
+                }
+                aria-label="Ask a question about this codebase"
+                className="flex-1 rounded-lg border border-edge bg-panel px-3 py-2 text-sm focus:border-accent disabled:opacity-50"
               />
               <button
                 disabled={!active || busy}
@@ -265,7 +336,13 @@ export default function App() {
         </main>
 
         {/* Source */}
-        <aside className="hidden w-[30rem] shrink-0 border-l border-edge lg:block">
+        <aside
+          className={`shrink-0 border-l border-edge bg-ink lg:block lg:static lg:w-[30rem] ${
+            file || loadingFile
+              ? 'fixed inset-y-0 right-0 z-30 w-full max-w-[30rem] shadow-2xl shadow-black/60 lg:shadow-none'
+              : 'hidden'
+          }`}
+        >
           <SourceViewer file={file} line={line} loading={loadingFile} onClose={() => setFile(null)} />
         </aside>
       </div>

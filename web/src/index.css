@@ -6,11 +6,44 @@
   --color-panel: #12151a;
   --color-edge: #232830;
   --color-dim: #8b93a1;
+  /* Gutter line numbers. They look like chrome but they are the thing a citation
+     addresses, so they hold the same 4.5:1 body-text bar: 5.02:1 on ink, 4.72:1 on panel.
+     The previous neutral-600 measured 2.52:1. */
+  --color-gutter: #7a828f;
   --color-accent: #5fbb90;
 }
 
 html, body, #root { height: 100%; }
 body { background: var(--color-ink); color: #e7eaee; }
+
+/* One focus ring for the whole app, declared here rather than per component because the
+   citation chips are injected as raw HTML by marked and never pass through a className. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  /* Longhands, not the shorthand: something in the utility layer was winning on
+     outline-color and leaving the ring the body text colour on some elements. */
+  outline-style: solid;
+  outline-width: 2px;
+  outline-color: var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 5px;
+}
+
+/* Screen-reader-only, for the status region that narrates a streaming turn. */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* The answer is rendered markdown; these are the only bits worth styling by hand. */
 .prose-answer p { margin: 0.5rem 0; line-height: 1.65; }
@@ -33,6 +66,18 @@ body { background: var(--color-ink); color: #e7eaee; }
   padding: 0.05rem 0.35rem; border-radius: 5px; white-space: nowrap;
 }
 .cite:hover { background: #1c3129; }
+
+/* Motion here is only ever state feedback, so the reduced-motion answer is to cut it
+   entirely rather than to substitute a crossfade. Nothing is communicated by the movement
+   that is not already communicated by the end state. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { background: #2a303a; border-radius: 5px; }

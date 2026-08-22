@@ -1,0 +1,6 @@
+{
+  "files": ["web/index.html"],
+  "insertBefore": "<script type=\"module\" src=\"/src/main.tsx\"></script>",
+  "commentSyntax": "html",
+  "cspChecked": true
+}

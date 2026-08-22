@@ -571,7 +571,12 @@ against the previous turn before retrieval ran:
 
 ![follow-up question](docs/screenshots/followup.png)
 
-Starting state, with one repository indexed:
+The cold start, which is the screen a first-time visitor actually lands on. It shows what a
+cited answer looks like rather than describing it:
+
+![empty state](docs/screenshots/empty.png)
+
+And once a repository is selected:
 
 ![starting state](docs/screenshots/suggestions.png)
 
@@ -597,6 +602,14 @@ Everything except `/healthz` takes `X-API-Key` when `ORACLE_API_KEY` is set.
 curl -N -X POST localhost:8000/chat -H 'content-type: application/json' \
   -d '{"repo_id":"flask-1a2b3c4d","message":"where are routes registered?"}'
 ```
+
+## Design docs
+
+[PRODUCT.md](PRODUCT.md) carries the strategic context (who this is for, what it claims, the
+principles that decide arguments) and [DESIGN.md](DESIGN.md) carries the visual system
+(palette with measured contrast, type scale, component states, motion rules). They exist so
+that a change to this interface can be argued against something written down rather than
+against taste.
 
 ## Configuration
 
