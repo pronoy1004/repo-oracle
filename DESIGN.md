@@ -117,13 +117,27 @@ real phases (clone, chunk, embed, map) as they happen.
 
 ## Motion
 
-Motion is state feedback only. `transition-colors` on interactive elements at Tailwind's
-default 150ms, and a smooth scroll to the newest turn. There is no entrance animation, no
-staggered reveal, and no page-load choreography, because the product loads into a task.
+Five moments animate. Everything else does not, on purpose, and the list is closed: a sixth
+needs an argument, not a preference.
 
-`prefers-reduced-motion: reduce` cuts all of it to 0.01ms. Nothing is communicated by the
-movement that the end state does not already communicate, so there is no crossfade
-substitute to design.
+| Moment | Motion | Why it earns it |
+|---|---|---|
+| Source panel below `lg` | `translateX(100%)` → `0`, 300ms `--ease-drawer`, `display` in the transition with `allow-discrete` | Spatial consistency. It enters and leaves by the right edge it lives on, so it stays connected to the citation that opened it. Above `lg` it is a static column and never moves. |
+| The cited line | `cite-flash`, background 30% → 10% accent, 400ms `--ease-out` | State indication. Clicking a second citation into an already-open file changes nothing else on screen; without the beat, the verify half of the loop silently fails. Background only, so nothing shifts under a reader. |
+| Excerpts disclosure | `height: 0 → auto`, opacity, 220ms `--ease-out` via `::details-content` and `interpolate-size` | Prevents the transcript jumping under the reader when the disclosure snaps open. Degrades to an instant open on engines without `::details-content`. |
+| Any pressable | `scale(0.98)` on `:active`, 120ms `--ease-out` | Feedback. Deliberately at the imperceptible end of both ranges, because Ask is pressed constantly and this must never be something you wait for. |
+| Ingest log lines | `opacity` + `translateY(3px)`, 160ms `--ease-out`, via `@starting-style` | State indication during a wait measured in minutes. The one screen where the user is watching for change rather than reading. |
+
+Two curves, both exponential ease-outs, so motion starts fast and settles:
+`--ease-out: cubic-bezier(0.23, 1, 0.32, 1)` and `--ease-drawer: cubic-bezier(0.32, 0.72, 0, 1)`.
+Only `transform`, `opacity` and `background-color` are animated; nothing animates a layout
+property. No entrance choreography on page load, no staggered reveals, no bounce.
+
+`prefers-reduced-motion: reduce` cuts all of it to 0.01ms. It is a cut rather than a gentler
+substitute because every one of these communicates something the end state already shows.
+The one place CSS could not do that alone is the transcript's `scrollIntoView`, since
+`scroll-behavior` does not govern an explicit `behavior` option, so that preference is read
+in JS at the call site.
 
 ## Focus
 

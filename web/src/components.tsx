@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { marked } from 'marked'
 import type { Repo, Source } from './api'
 
@@ -87,9 +87,11 @@ export function SourceViewer({
   onClose: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const [beat, setBeat] = useState(0)
 
   useEffect(() => {
     ref.current?.querySelector('[data-hit="1"]')?.scrollIntoView({ block: 'center' })
+    setBeat((n) => n + 1)
   }, [file, line])
 
   if (loading)
@@ -121,9 +123,14 @@ export function SourceViewer({
             const hit = n >= line - 1 && n <= line + 1
             return (
               <div
-                key={n}
+                /* The cited row is keyed on the beat counter so it remounts when the target
+                   changes, which is what replays the flash. Its neighbours keep a stable
+                   key and never re-render. */
+                key={n === line ? `hit-${beat}` : n}
                 data-hit={n === line ? '1' : undefined}
-                className={hit ? 'bg-emerald-500/10' : undefined}
+                className={
+                  n === line ? 'cite-flash bg-emerald-500/10' : hit ? 'bg-emerald-500/10' : undefined
+                }
               >
                 <span className="inline-block w-12 select-none pr-3 text-right text-gutter">
                   {n}

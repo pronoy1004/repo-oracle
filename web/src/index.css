@@ -11,10 +11,121 @@
      The previous neutral-600 measured 2.52:1. */
   --color-gutter: #7a828f;
   --color-accent: #5fbb90;
+
+  /* Motion vocabulary. Two curves, both exponential ease-outs: motion here starts fast and
+     settles, which reads as responsive rather than choreographed. --ease-out overrides
+     Tailwind's default so the `ease-out` utility and hand-written CSS agree. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Lets height animate to and from `auto`, which the disclosure below depends on. */
+:root {
+  interpolate-size: allow-keywords;
 }
 
 html, body, #root { height: 100%; }
 body { background: var(--color-ink); color: #e7eaee; }
+
+/* --- Motion -------------------------------------------------------------------------
+   Five moments, each one state feedback rather than decoration. Anything not listed here
+   does not move, on purpose. The reduced-motion block at the bottom of this file cuts all
+   of it. */
+
+/* 1. The source panel. Above lg it is a static column and never animates. Below lg it is a
+   slide-over, and it enters and leaves by the same right edge it lives on, so the panel
+   stays connected to the citation that summoned it. display is in the transition with
+   allow-discrete so the element can animate out before it is removed from the box tree. */
+.source-panel {
+  display: none;
+  transform: translateX(100%);
+  transition:
+    transform 300ms var(--ease-drawer),
+    display 300ms allow-discrete;
+}
+.source-panel[data-open='true'] {
+  display: block;
+  transform: translateX(0);
+}
+@starting-style {
+  .source-panel[data-open='true'] {
+    transform: translateX(100%);
+  }
+}
+@media (min-width: 1024px) {
+  /* Always present, never moving: at this width the panel is furniture, not an overlay. */
+  .source-panel,
+  .source-panel[data-open='true'] {
+    display: block;
+    position: static;
+    width: 30rem;
+    max-width: none;
+    transform: none;
+    box-shadow: none;
+    transition: none;
+  }
+}
+
+/* 2. The cited line. Clicking a second citation into an already-open file changes nothing
+   on screen except which line is highlighted, which is easy to miss and quietly breaks the
+   verify half of the loop. A single background beat marks the new target. Background only:
+   nothing shifts under a reader's eye. */
+@keyframes cite-flash {
+  from {
+    background-color: color-mix(in oklab, var(--color-accent) 30%, transparent);
+  }
+  to {
+    background-color: color-mix(in oklab, var(--color-accent) 10%, transparent);
+  }
+}
+.cite-flash {
+  animation: cite-flash 400ms var(--ease-out);
+}
+
+/* 3. The retrieved-excerpts disclosure, which otherwise snaps open and jumps the transcript
+   under the reader. Progressive enhancement: engines without ::details-content still open,
+   they just open instantly, exactly as before. */
+details::details-content {
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition:
+    height 220ms var(--ease-out),
+    opacity 220ms var(--ease-out),
+    content-visibility 220ms allow-discrete;
+}
+details[open]::details-content {
+  height: auto;
+  opacity: 1;
+}
+
+/* 4. Press feedback. Ask is pressed constantly, so this sits at the imperceptible end of
+   both ranges: 0.98 rather than 0.95, 120ms rather than 160. It confirms the press without
+   ever being something you wait for. */
+button:not(:disabled),
+[role='button'] {
+  transition: transform 120ms var(--ease-out);
+}
+button:not(:disabled):active,
+[role='button']:active {
+  transform: scale(0.98);
+}
+
+/* 5. Ingest log lines. The one place in the product where the user is watching for change
+   rather than reading, during a wait measured in minutes. */
+.log-line {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 160ms var(--ease-out);
+}
+@starting-style {
+  .log-line {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
 
 /* One focus ring for the whole app, declared here rather than per component because the
    citation chips are injected as raw HTML by marked and never pass through a className. */

@@ -40,7 +40,10 @@ export default function App() {
   }, [refresh])
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: 'smooth' })
+    // `scroll-behavior: auto` in the reduced-motion block does not override an explicit
+    // behavior passed here, so the preference has to be read directly.
+    const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    bottom.current?.scrollIntoView({ behavior: still ? 'auto' : 'smooth' })
   }, [turns])
 
   useEffect(() => {
@@ -174,7 +177,7 @@ export default function App() {
               className="max-h-40 overflow-y-auto rounded-md border border-edge bg-panel p-2 font-mono text-[0.7rem] leading-relaxed text-dim"
             >
               {ingestLog.map((l, i) => (
-                <div key={i} className="truncate" title={l}>
+                <div key={i} className="log-line truncate" title={l}>
                   {l}
                 </div>
               ))}
@@ -337,11 +340,9 @@ export default function App() {
 
         {/* Source */}
         <aside
-          className={`shrink-0 border-l border-edge bg-ink lg:block lg:static lg:w-[30rem] ${
-            file || loadingFile
-              ? 'fixed inset-y-0 right-0 z-30 w-full max-w-[30rem] shadow-2xl shadow-black/60 lg:shadow-none'
-              : 'hidden'
-          }`}
+          data-open={file || loadingFile ? 'true' : 'false'}
+          className="source-panel fixed inset-y-0 right-0 z-30 w-full max-w-[30rem] shrink-0
+                     border-l border-edge bg-ink shadow-2xl shadow-black/60"
         >
           <SourceViewer file={file} line={line} loading={loadingFile} onClose={() => setFile(null)} />
         </aside>
