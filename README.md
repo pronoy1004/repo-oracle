@@ -32,6 +32,10 @@ questions. A repo the size of Flask takes about four minutes on the free tier, a
 that is the embedding rate limit rather than any work we are doing (see
 [Rate limits](#rate-limits)).
 
+One caveat I should state rather than let you find: I do not have Docker on this machine, so
+the image is written and reviewed but never built. The path below is the one I actually ran
+end to end, and it is what every screenshot and eval number in this README came from.
+
 Without Docker:
 
 ```bash
