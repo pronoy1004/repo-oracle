@@ -59,16 +59,17 @@ Tests, which need no key and touch no network:
 flowchart LR
     subgraph ingest["Ingest (minutes, background thread)"]
         A[git clone --depth 1] --> B[walk + chunk<br/>declaration boundaries]
-        B --> C[embed<br/>gemini-embedding-001]
+        B --> C[embed<br/>gemini-embedding-2]
         A --> D[digest → 3 LLM passes<br/>architecture / flows / interfaces]
         D --> C
-        C --> E[(SQLite<br/>chunks + FTS5 + vectors)]
+        C --> E[(Chroma<br/>HNSW vectors)]
+        B --> S[(SQLite<br/>chunk rows + FTS5)]
     end
 
     subgraph turn["A turn (seconds)"]
         Q[question] --> R[rewrite follow-up<br/>into a standalone query]
         R --> L[FTS5 lexical]
-        R --> V[numpy cosine]
+        R --> V[Chroma ANN]
         L --> F[RRF fusion]
         V --> F
         F --> CTX[context budget<br/>~12k tokens]
@@ -76,7 +77,7 @@ flowchart LR
         G --> T[(trace.jsonl)]
     end
 
-    E -.-> L
+    S -.-> L
     E -.-> V
 ```
 
@@ -84,7 +85,7 @@ flowchart LR
 |---|---|
 | [`repo_oracle/checkout.py`](repo_oracle/checkout.py) | Getting a repo on disk safely. Scheme allowlist, ref validation, local-path allowlist. |
 | [`repo_oracle/chunk.py`](repo_oracle/chunk.py) | Walking the tree and cutting files into chunks. |
-| [`repo_oracle/index.py`](repo_oracle/index.py) | SQLite: FTS5 lexical search, numpy dense search, RRF fusion. |
+| [`repo_oracle/index.py`](repo_oracle/index.py) | Both stores: Chroma for the vectors, SQLite + FTS5 for chunks and lexical search, RRF over the two. |
 | [`repo_oracle/mapper.py`](repo_oracle/mapper.py) | The repository-summary tier. |
 | [`repo_oracle/chat.py`](repo_oracle/chat.py) | A turn: rewrite, retrieve, build context, stream a cited answer. |
 | [`repo_oracle/ingest.py`](repo_oracle/ingest.py) | Orchestration and progress events. |
@@ -141,23 +142,33 @@ Every chunk carries `path:start-end` as the first line of what gets embedded. Th
 is part of what makes a chunk relevant, since half of "where is the router configured" is a
 path question, and it means any retrieved chunk can be cited without a second lookup.
 
-### SQLite instead of a vector database
+### Chroma for the vectors, SQLite for everything else
 
-A 5,000-file repository produces around 20,000 chunks. Twenty thousand 768-dimension
-float32 vectors is 60 MB and one numpy matmul, which runs in single-digit milliseconds,
-faster than the network hop to a vector service would take. What a vector database buys is
-approximate search above roughly a million vectors. I am two orders of magnitude below that,
-so buying it now means a container, a client library and a schema to keep in sync, in
-exchange for nothing measurable.
+Dense vectors go in Chroma, an embedded vector database with an HNSW index. Chunk rows, the
+metadata and the lexical half live in SQLite. Two stores, each doing the job it is good at.
 
-I considered Chroma (one dependency, still no server, but I would need a second thing for
-lexical search anyway) and pgvector (the honest production answer, and a service the
-reviewer has to run). SQLite gives me both halves in one file: FTS5 is in stdlib `sqlite3`,
-and the vectors are blobs in a table.
+How I got here is more useful to read than a clean-sounding justification. My first build had
+no vector database: embeddings as blobs in a SQLite table and a brute-force numpy matmul for
+cosine. At this scale that is genuinely fast, and I argued for it. What changed my mind is
+that it is the wrong thing to own. Nearest-neighbour search is a solved problem with mature
+implementations, and hand-rolled brute force is the version that quietly gets worse: fine at
+20k vectors, mediocre at 100k, and by the time it hurts you are rewriting retrieval in the
+middle of something else. Chroma is one dependency and brings a real ANN index, metadata
+filtering and persistence, none of which I want to maintain my own version of.
 
-The ceiling is real and I would rather state it than hide it: brute force degrades near
-100k chunks per repo, about 300 ms a query. Past that, `search_dense` becomes pgvector or an
-HNSW index and nothing else in the codebase changes, because fusion only consumes ranks.
+What I refused to give up was the one-command setup. Chroma runs embedded, in-process, so
+there is still no service to operate on a single node. Qdrant or pgvector are the same design
+with a container in front, and moving to either means changing `_client` and `search_dense`
+and nothing above them, because everything upstream consumes ranks rather than scores.
+
+What it cost, honestly. One more dependency, and not a small one. Two stores to keep
+consistent instead of one, which is why `add` commits SQLite before Chroma: written that way,
+a crash leaves a chunk that dense search cannot reach but lexical search still finds, rather
+than a Chroma id that resolves to nothing, which would be a silent wrong answer. And HNSW is
+approximate, so recall is no longer exactly 100% the way a full scan was.
+
+Chunk text deliberately stays out of Chroma. Storing it in both places doubles the disk for
+nothing, since a hit is resolved by id and SQLite already has the row.
 
 ### Hybrid retrieval, fused by RRF
 
@@ -269,6 +280,47 @@ this set to pick the map-tier weight: I ran it at 1.0, 1.15 and 1.5 and kept the
 .venv/bin/python evals/run.py --k 5
 ```
 
+Current numbers, 18 questions against `pronoy1004/codebase-cartography`, Chroma + FTS5:
+
+```
+questions      18
+hit@5          94%
+top-1 hit      44%
+MRR            0.66
+```
+
+The one miss is "how are skills loaded into the system prompt?", which returns three chunks
+of the README instead of `agent.py`. The README explains that mechanism in prose and the code
+does it in one line, so the prose wins on similarity. A re-ranker is the fix.
+
+Top-1 at 44% with hit@5 at 94% is the expected shape rather than a problem: the right file is
+nearly always in the window, and the model reads every excerpt, not only the first. Top-1 is
+the number a re-ranker moves, which is why it is first on the list of what I would add next.
+
+**The evals caught two bad ideas of mine, which is the reason they exist.** Both were about
+how the map tier reaches the model, and both looked reasonable on paper:
+
+| Design | hit@5 | MRR |
+|---|---|---|
+| Score boost for map chunks (x1.15) | 89% | 0.43 |
+| Reserved map slots inside the top k | 89% | 0.59 |
+| Map slots in addition to the top k | 94% | 0.66 |
+
+The mistake is the same one twice: I let summaries compete with source files for the same
+slots. They answer different questions, so `search` now returns k code chunks plus up to two
+summaries, and the context budget absorbs the difference. Neither bad version was visible in
+the answers, which all read fine.
+
+One honesty note on the comparison. The earlier brute-force build scored hit@5 100% and MRR
+0.64 on these same questions, so hit@5 lost one question while MRR and top-1 went up. I
+cannot cleanly attribute that, because the move to Chroma and a change of embedding model
+(the free tier's daily quota on the old one ran out mid-work) landed together. Two variables,
+one measurement, so I report it rather than claim the vector store improved anything.
+
+```bash
+.venv/bin/python evals/run.py --k 5
+```
+
 Current numbers, 18 questions against `pronoy1004/codebase-cartography`:
 
 ```
@@ -321,10 +373,14 @@ Cloud Tasks) and a worker pool that scales separately from the API, because the 
 completely different resource shapes. Ingest is a long CPU-and-network job; a turn is a
 two-second burst.
 
-**Move the index off local disk.** SQLite per repo is a local file, which pins a repo to a
-machine. On AWS: Aurora Postgres with pgvector, one table, `repo_id` as the partition key,
-`tsvector` for the lexical half so both halves stay in one store. The fusion code does not
-change. Checkouts stay on ephemeral local disk since they are deleted after ingest anyway.
+**Move both stores off local disk.** Embedded Chroma and per-repo SQLite are local files,
+which pin a repo to a machine. Two ways out, and I would pick by team rather than by
+benchmark: run Chroma in server mode and point the client at it, which is a URL change and
+leaves the code identical; or consolidate on Aurora Postgres with pgvector, one table,
+`repo_id` as the partition key, `tsvector` for the lexical half, so both halves live in one
+store with one backup story. I lean to the second for anything long-lived, because one
+database to operate beats two. Checkouts stay on ephemeral local disk, since they are deleted
+after ingest anyway.
 
 **Cache embeddings by content hash.** Two repos that vendor the same library, or the same
 repo re-indexed at a new commit, re-embed everything today. Keyed by chunk hash in Redis or
@@ -400,6 +456,12 @@ repo as a test rather than a comment because that is the kind of bug that comes 
   ingest. Skipped files (binaries, lockfiles, minified bundles) cannot be opened.
 - **No re-ranker.** A cross-encoder over the top 40 would measurably improve precision. It
   is the first thing I would add with more time.
+- **HNSW is approximate.** Dense recall is no longer exactly 100% the way a full scan was. At
+  this corpus size I cannot measure the difference, and the eval numbers come from the real
+  store, but it is a property of the design rather than something I can argue away.
+- **Two stores can drift.** SQLite commits before Chroma, so an interrupted ingest can leave
+  chunks only lexical search reaches. There is no reconciliation pass; a re-ingest is the
+  repair, and it drops both stores first.
 
 ---
 
@@ -437,8 +499,11 @@ produces code that works and that nobody, including the person who shipped it, c
 
 **I kept a bias toward less code.** My standing instruction to the assistant is to reach for
 the standard library before a dependency, a native feature before a library, and one line
-before fifty. SQLite over a vector DB, `sqlite3` FTS5 over a search service, numpy over an
-ANN index, hand-parsed SSE over another client library. The default failure mode of AI
+before fifty. Stdlib `sqlite3` FTS5 over a search service, hand-parsed SSE over another
+client library, no orchestration framework. That instinct has a limit and this project found
+it: I first wrote my own brute-force vector search to avoid a dependency, and that was the
+wrong call, because nearest-neighbour search is somebody else's solved problem and my version
+would only have got worse. Reaching for less code is a default, not a rule. The default failure mode of AI
 coding assistants is not wrong code, it is *too much* code: a factory here, a config layer
 there, an abstraction over one implementation. Left unchecked it produces a codebase that
 looks professional and costs a week to understand.
@@ -539,11 +604,11 @@ curl -N -X POST localhost:8000/chat -H 'content-type: application/json' \
 |---|---|---|
 | `GEMINI_API_KEY` | required | Or the key matching whichever provider `ORACLE_MODEL` names. |
 | `ORACLE_MODEL` | `gemini/gemini-flash-latest` | Any litellm `provider/model`. |
-| `ORACLE_EMBED_MODEL` | `gemini/gemini-embedding-001` | Changing this invalidates existing indexes. |
+| `ORACLE_EMBED_MODEL` | `gemini/gemini-embedding-2` | Changing this invalidates existing indexes. |
 | `ORACLE_EMBED_DIMS` | `768` | Matryoshka truncation. |
 | `ORACLE_EMBED_RPM` | `90` | Ingest pacing. Raise on a paid key. |
 | `ORACLE_API_KEY` | unset | When set, required on every route but `/healthz`. |
-| `ORACLE_DATA_DIR` | `data` | Where indexes and traces live. |
+| `ORACLE_DATA_DIR` | `data` | Where the SQLite files, the Chroma store and the traces live. |
 | `ORACLE_MAX_FILES` / `ORACLE_MAX_CHUNKS` | `4000` / `12000` | Ingest caps. |
 | `ORACLE_SKIP_MAP` | unset | Skip the map tier. Faster ingest, worse architectural answers. |
 | `ALLOWED_REPO_ROOTS` | unset | Colon-separated directories that may be ingested as local paths. |

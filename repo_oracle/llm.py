@@ -18,8 +18,8 @@ from collections import deque
 from collections.abc import Iterator
 
 MODEL = os.environ.get("ORACLE_MODEL", "gemini/gemini-flash-latest")
-EMBED_MODEL = os.environ.get("ORACLE_EMBED_MODEL", "gemini/gemini-embedding-001")
-# gemini-embedding-001 returns 3072 dimensions by default. It is trained with Matryoshka
+EMBED_MODEL = os.environ.get("ORACLE_EMBED_MODEL", "gemini/gemini-embedding-2")
+# Gemini's embedding models return 3072 dimensions by default. It is trained with Matryoshka
 # representation learning, so a 768-slice keeps most of the quality at a quarter of the
 # memory and a quarter of the matmul. 20k chunks: 60MB instead of 240MB.
 EMBED_DIMS = int(os.environ.get("ORACLE_EMBED_DIMS", "768"))

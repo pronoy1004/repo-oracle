@@ -42,9 +42,29 @@ def test_fts_query_of_a_pure_stopword_question_is_empty_not_broken():
 
 
 def test_dense_search_ranks_the_nearest_vector_first(index):
-    target = index.db.execute("SELECT id, vec FROM vectors ORDER BY id").fetchall()[1]
-    vec = np.frombuffer(target["vec"], dtype=np.float32)
-    assert index.search_dense(list(map(float, vec)))[0] == target["id"]
+    # Query with a chunk's own embedding: the vector store must return that chunk first.
+    second = index.db.execute("SELECT id FROM chunks ORDER BY id").fetchall()[1]["id"]
+    assert index.search_dense(fake_vec(1))[0] == second
+
+
+def test_dense_search_is_empty_before_anything_is_indexed(tmp_path):
+    ix = Index(tmp_path / "empty.db")
+    assert ix.search_dense(fake_vec(0)) == []
+    ix.close()
+
+
+def test_drop_clears_both_stores(tmp_path):
+    ix = Index(tmp_path / "gone.db")
+    ix.add([Chunk("a.py", 1, 3, "python", "def a(): ...")], [fake_vec(3)])
+    assert ix.count() == 1 and ix.collection.count() == 1
+    ix.drop()
+
+    # Re-opening the same id must come back empty, not half-populated. A stale Chroma
+    # collection surviving a delete is how a "refreshed" repo starts citing files that no
+    # longer exist.
+    again = Index(tmp_path / "gone.db")
+    assert again.count() == 0 and again.collection.count() == 0
+    again.close()
 
 
 def test_hybrid_fusion_scores_a_chunk_both_retrievers_found_above_either_alone(index):
@@ -71,19 +91,20 @@ def test_file_text_reassembles_the_original_lines(tmp_path):
     ix.close()
 
 
-def test_map_chunks_get_reserved_slots_and_never_crowd_out_code(tmp_path):
-    # Summaries orient an answer; source files are the answer. Two of the first is plenty,
-    # and letting more through measurably hurt retrieval (see MAP_SLOTS in index.py).
+def test_map_chunks_ride_alongside_k_and_never_displace_code(tmp_path):
+    # Summaries orient an answer; source files are the answer. Letting summaries compete for
+    # the same k measurably hurt retrieval, so they are additional (see MAP_SLOTS).
     from repo_oracle.index import MAP_SLOTS
 
     ix = Index(tmp_path / "m.db")
-    chunks = [
+    code = [Chunk(f"f{i}.py", 1, 9, "python", f"def login{i}(): pass  # routing") for i in range(4)]
+    maps = [
         Chunk(f"codebase-map/doc{i}.md", 1, 9, "markdown", f"login and routing overview {i}", tier="map")
         for i in range(5)
-    ] + [Chunk("auth.py", 1, 9, "python", "def login(): ...")]
-    ix.add(chunks, [fake_vec(i) for i in range(len(chunks))])
+    ]
+    ix.add(code + maps, [fake_vec(i) for i in range(len(code) + len(maps))])
 
-    hits = ix.search("login routing overview", fake_vec(0), k=6)
+    hits = ix.search("login routing overview", fake_vec(0), k=4)
+    assert sum(h.tier == "code" for h in hits) == 4, "code must get its full k regardless"
     assert sum(h.tier == "map" for h in hits) == MAP_SLOTS
-    assert any(h.tier == "code" for h in hits)
     ix.close()

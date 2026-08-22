@@ -1,21 +1,27 @@
-"""The index: one SQLite file per repository, holding both halves of hybrid retrieval.
+"""The index: two stores per repository, one for each half of hybrid retrieval.
 
-Why SQLite and not a vector database. A repository of 5,000 files produces on the order of
-20,000 chunks. A brute-force cosine over 20,000 x 768 float32 is one numpy matmul, about
-15 MB of RAM and single-digit milliseconds — faster than the network hop to a vector
-service, and it adds no container, no client library, and no schema to keep in sync. What a
-vector DB buys is approximate search above roughly a million vectors, and we are two orders
-of magnitude below that.
+Dense vectors live in Chroma, an embedded vector database with an HNSW index. Chunk text and
+metadata live in SQLite, which also carries the lexical half through FTS5. Reciprocal Rank
+Fusion merges the two rankings.
 
-ponytail: brute force + FTS5, honest ceiling ~100k chunks per repo (about 300ms/query).
-Past that, swap `search_dense` for pgvector or an HNSW index; the fusion and the callers do
-not change.
+Why two stores rather than one. The dense side wants approximate nearest-neighbour search
+over a growing set of vectors, which is exactly what a vector database is built for and what
+hand-rolled code gets progressively worse at. The lexical side wants BM25 over an inverted
+index, which FTS5 already does inside stdlib `sqlite3`. Neither store is good at the other
+job, so each keeps the one it is good at, and the chunk rows stay in SQLite so a citation
+can be resolved to source with a plain `SELECT`.
 
-The lexical half is FTS5, which ships inside stdlib sqlite3. It is not decoration: half the
-questions people ask a codebase are about an identifier (`UserSerializer`, `--no-verify`,
-`REDIS_URL`), and an embedding model is *worse* than exact match at those. Dense retrieval
-covers the other half, where the asker does not know the vocabulary. Reciprocal Rank Fusion
-merges them without needing the two score scales to be comparable, which they are not.
+The lexical half is not decoration. Half the questions people ask a codebase are about an
+identifier (`UserSerializer`, `--no-verify`, `REDIS_URL`), and an embedding model is *worse*
+than exact match at those, because it blurs the token into a neighbourhood of related
+concepts. Dense retrieval covers the other half, where the asker does not know the
+vocabulary yet. RRF merges them without needing the two score scales to be comparable,
+which they are not.
+
+Chroma is embedded on purpose: it is a real vector database with a real ANN index, and it
+runs in-process, so there is no service to operate for a single-node deployment. Moving to
+a server (Chroma's own, Qdrant, pgvector) means changing `_collection` and `search_dense`
+and nothing else, because everything above them consumes ranks.
 """
 
 from __future__ import annotations
@@ -23,21 +29,26 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
+import chromadb
+from chromadb.config import Settings
 
 from .chunk import Chunk
 
 RRF_K = 60  # standard constant; the ranking is insensitive to it between ~20 and ~100
 POOL = 40   # candidates pulled from each retriever before fusion
-# Map chunks get reserved slots rather than a score boost. I tried the boost first (a
-# TIER_WEIGHT of 1.15) and evals/run.py said it was a bad idea: hit@5 fell from 100% to 89%
-# and MRR from 0.65 to 0.43, because boosted summaries pushed the actual source files out
-# of the top five. The two tiers answer different questions, so they should not compete for
-# the same slots. Two summaries orient an answer; more crowd out the code.
+# Map chunks ride *alongside* the top k rather than inside it. Two earlier designs were
+# both worse, and the evals said so:
+#
+#   score boost (x1.15):     hit@5 89%, MRR 0.43  — summaries outranked the source
+#   reserved slots inside k: hit@5 89%, MRR 0.59  — summaries displaced the source
+#   extra slots outside k:   hit@5 94%, MRR 0.66  — code retrieval untouched
+#
+# The tiers answer different questions, so making them compete for the same slots was the
+# mistake in both. `search` now returns k code hits plus up to MAP_SLOTS summaries, and the
+# context budget in chat.py absorbs the difference.
 MAP_SLOTS = 2
 
 SCHEMA = """
@@ -56,7 +67,6 @@ CREATE INDEX IF NOT EXISTS chunks_path ON chunks(path);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     text, path, symbols, content='chunks', content_rowid='id', tokenize='porter unicode61'
 );
-CREATE TABLE IF NOT EXISTS vectors (id INTEGER PRIMARY KEY, vec BLOB NOT NULL);
 """
 
 
@@ -109,15 +119,39 @@ def fts_query(question: str) -> str:
     return " OR ".join(f'"{w}"' for w in dict.fromkeys(expanded))
 
 
+def _client(root: Path) -> chromadb.ClientAPI:
+    """One Chroma client per data directory.
+
+    PersistentClient is a shared instance per path inside chromadb, so calling this on every
+    request is cheap; it is not a new database connection each time. Telemetry is off
+    because a documentation tool has no business phoning home about someone's private repo.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    return chromadb.PersistentClient(
+        path=str(root), settings=Settings(anonymized_telemetry=False, allow_reset=True)
+    )
+
+
 class Index:
-    def __init__(self, db_path: Path):
+    """One repository's index: SQLite for chunks and lexical search, Chroma for vectors."""
+
+    def __init__(self, db_path: Path, name: str | None = None):
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
-        self._matrix: np.ndarray | None = None
-        self._ids: np.ndarray | None = None
+
+        # Chroma collection names must be 3-512 chars of [a-zA-Z0-9._-] and start and end
+        # alphanumeric, which repo ids already satisfy; the prefix covers short names.
+        self.name = re.sub(r"[^a-zA-Z0-9._-]", "-", name or self.path.stem)
+        self.chroma = _client(self.path.parent / "chroma")
+        self.collection = self.chroma.get_or_create_collection(
+            name=f"repo-{self.name}",
+            # Embeddings are cosine-space; Chroma defaults to L2, which ranks differently
+            # for vectors that are not unit length.
+            metadata={"hnsw:space": "cosine"},
+        )
 
     # ---- writing -------------------------------------------------------------
 
@@ -132,45 +166,43 @@ class Index:
         return {r["key"]: json.loads(r["value"]) for r in self.db.execute("SELECT * FROM meta")}
 
     def add(self, chunks: list[Chunk], vectors: list[list[float]]) -> None:
-        """Insert chunks and their embeddings together. One transaction, so a crash
-        mid-ingest leaves no chunk without a vector."""
+        """Write a batch of chunks to both stores.
+
+        SQLite is committed first, so a chunk always has a row before it has a vector. The
+        reverse order would leave Chroma returning ids that resolve to nothing, which is a
+        silent wrong answer; this order leaves a chunk that dense search cannot reach, which
+        lexical search still finds. Neither is good, and one is much less bad.
+        """
         assert len(chunks) == len(vectors), "every chunk needs exactly one vector"
         cur = self.db.cursor()
-        for chunk, vec in zip(chunks, vectors):
+        ids = []
+        for chunk in chunks:
             cur.execute(
                 "INSERT INTO chunks(path,start_line,end_line,lang,tier,symbols,text)"
                 " VALUES(?,?,?,?,?,?,?)",
                 (chunk.path, chunk.start_line, chunk.end_line, chunk.lang, chunk.tier,
                  chunk.symbols, chunk.text),
             )
-            rowid = cur.lastrowid
+            ids.append(cur.lastrowid)
             cur.execute(
                 "INSERT INTO chunks_fts(rowid,text,path,symbols) VALUES(?,?,?,?)",
-                (rowid, chunk.text, chunk.path, chunk.symbols),
+                (cur.lastrowid, chunk.text, chunk.path, chunk.symbols),
             )
-            arr = np.asarray(vec, dtype=np.float32)
-            norm = float(np.linalg.norm(arr))
-            if norm:
-                arr = arr / norm  # store normalised, so cosine is a plain dot product later
-            cur.execute("INSERT INTO vectors(id,vec) VALUES(?,?)", (rowid, arr.tobytes()))
         self.db.commit()
-        self._matrix = self._ids = None
+
+        # Only what retrieval filters on goes into Chroma's metadata. The chunk text stays
+        # in SQLite: storing it twice doubles the disk for no gain, since a hit is resolved
+        # by id anyway.
+        self.collection.add(
+            ids=[str(i) for i in ids],
+            embeddings=vectors,
+            metadatas=[{"tier": c.tier, "path": c.path} for c in chunks],
+        )
 
     def count(self) -> int:
         return self.db.execute("SELECT COUNT(*) c FROM chunks").fetchone()["c"]
 
     # ---- reading -------------------------------------------------------------
-
-    def _vectors(self) -> tuple[np.ndarray, np.ndarray]:
-        """All vectors as one matrix, loaded once and kept. A 20k-chunk repo is ~60MB."""
-        if self._matrix is None:
-            rows = self.db.execute("SELECT id, vec FROM vectors ORDER BY id").fetchall()
-            self._ids = np.array([r["id"] for r in rows], dtype=np.int64)
-            self._matrix = (
-                np.vstack([np.frombuffer(r["vec"], dtype=np.float32) for r in rows])
-                if rows else np.zeros((0, 1), dtype=np.float32)
-            )
-        return self._matrix, self._ids
 
     def search_lexical(self, question: str, k: int = POOL) -> list[int]:
         query = fts_query(question)
@@ -186,19 +218,20 @@ class Index:
         return [r["rowid"] for r in rows]
 
     def search_dense(self, vector: list[float], k: int = POOL) -> list[int]:
-        matrix, ids = self._vectors()
-        if not len(matrix) or matrix.shape[1] == 1:
+        """Approximate nearest neighbours from Chroma, best first."""
+        n = self.collection.count()
+        if not n:
             return []
-        q = np.asarray(vector, dtype=np.float32)
-        norm = float(np.linalg.norm(q))
-        if not norm:
-            return []
-        sims = matrix @ (q / norm)
-        top = np.argpartition(-sims, min(k, len(sims) - 1))[:k]
-        return [int(ids[i]) for i in top[np.argsort(-sims[top])]]
+        try:
+            found = self.collection.query(query_embeddings=[vector], n_results=min(k, n))
+        except Exception:
+            return []  # a vector-store failure degrades the turn to lexical, not to an error
+        return [int(i) for i in found["ids"][0]]
 
     def search(self, question: str, query_vector: list[float] | None, k: int = 8) -> list[Hit]:
         """Hybrid retrieval: lexical and dense pools, fused by Reciprocal Rank Fusion.
+
+        Returns up to `k` code chunks plus up to `MAP_SLOTS` repository summaries.
 
         RRF is used instead of score normalisation on purpose. BM25 ranks and cosine
         similarities live on incomparable scales, and any attempt to normalise them needs a
@@ -234,16 +267,9 @@ class Index:
         ]
         hits.sort(key=lambda h: -h.score)
 
-        out, maps = [], 0
-        for hit in hits:
-            if hit.tier == "map":
-                if maps >= MAP_SLOTS:
-                    continue
-                maps += 1
-            out.append(hit)
-            if len(out) >= k:
-                break
-        return out
+        code = [h for h in hits if h.tier != "map"][:k]
+        maps = [h for h in hits if h.tier == "map"][:MAP_SLOTS]
+        return code + maps
 
     def file_text(self, path: str) -> str | None:
         """Reassemble a file from its chunks, for the source panel.
@@ -269,13 +295,19 @@ class Index:
         return [r["path"] for r in self.db.execute(
             "SELECT DISTINCT path FROM chunks WHERE tier='code' ORDER BY path")]
 
+    def drop(self) -> None:
+        """Remove this repository from both stores. Used when a repo is deleted or refreshed."""
+        try:
+            self.chroma.delete_collection(self.collection.name)
+        except Exception:
+            pass  # already gone, which is the state we wanted
+        self.close()
+        self.path.unlink(missing_ok=True)
+
     def close(self) -> None:
         self.db.close()
 
 
 def open_index(root: Path, repo_id: str) -> Index:
-    return Index(Path(root) / f"{repo_id}.db")
+    return Index(Path(root) / f"{repo_id}.db", name=repo_id)
 
-
-def stamp(index: Index, **kv) -> None:
-    index.set_meta(indexed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **kv)

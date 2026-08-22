@@ -90,7 +90,7 @@ def forget(rid: str) -> bool:
         return False
     del data[rid]
     REGISTRY.write_text(json.dumps(data, indent=2))
-    (DATA_DIR / f"{rid}.db").unlink(missing_ok=True)
+    open_index(DATA_DIR, rid).drop()  # both stores, not just the SQLite file
     JOBS.pop(rid, None)
     return True
 
@@ -125,10 +125,11 @@ def _run(job: Job, source: str, ref: str | None, kind: str) -> None:
         job.emit(type="chunk", detail=f"{len(chunks)} chunks from {files} files"
                  + (" (truncated)" if truncated else ""))
 
-        # Re-ingesting the same repo means "refresh", so the old index goes. Without this
-        # a second run appends a second copy of every chunk and retrieval returns each hit
-        # twice — which is exactly what happened the first time a run was interrupted.
-        (DATA_DIR / f"{job.id}.db").unlink(missing_ok=True)
+        # Re-ingesting the same repo means "refresh", so the old index goes, in both
+        # stores. Without this a second run appends a second copy of every chunk and
+        # retrieval returns each hit twice — which is exactly what happened the first time
+        # a run was interrupted partway through.
+        open_index(DATA_DIR, job.id).drop()
         index = open_index(DATA_DIR, job.id)
         _embed_and_add(index, chunks, job, label="code")
 
