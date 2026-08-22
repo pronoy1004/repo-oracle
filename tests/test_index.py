@@ -69,3 +69,21 @@ def test_file_text_reassembles_the_original_lines(tmp_path):
     assert ix.file_text("a.txt") == text
     assert ix.file_text("missing.txt") is None
     ix.close()
+
+
+def test_map_chunks_get_reserved_slots_and_never_crowd_out_code(tmp_path):
+    # Summaries orient an answer; source files are the answer. Two of the first is plenty,
+    # and letting more through measurably hurt retrieval (see MAP_SLOTS in index.py).
+    from repo_oracle.index import MAP_SLOTS
+
+    ix = Index(tmp_path / "m.db")
+    chunks = [
+        Chunk(f"codebase-map/doc{i}.md", 1, 9, "markdown", f"login and routing overview {i}", tier="map")
+        for i in range(5)
+    ] + [Chunk("auth.py", 1, 9, "python", "def login(): ...")]
+    ix.add(chunks, [fake_vec(i) for i in range(len(chunks))])
+
+    hits = ix.search("login routing overview", fake_vec(0), k=6)
+    assert sum(h.tier == "map" for h in hits) == MAP_SLOTS
+    assert any(h.tier == "code" for h in hits)
+    ix.close()

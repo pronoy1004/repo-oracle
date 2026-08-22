@@ -33,10 +33,12 @@ from .chunk import Chunk
 
 RRF_K = 60  # standard constant; the ranking is insensitive to it between ~20 and ~100
 POOL = 40   # candidates pulled from each retriever before fusion
-# The map tier is a handful of LLM-written summaries competing with thousands of code
-# chunks. Without a nudge it never surfaces; with too much it drowns the code. 1.15 was
-# picked by running evals/run.py at 1.0, 1.15, 1.5 and keeping the best hit-rate.
-TIER_WEIGHT = {"code": 1.0, "map": 1.15}
+# Map chunks get reserved slots rather than a score boost. I tried the boost first (a
+# TIER_WEIGHT of 1.15) and evals/run.py said it was a bad idea: hit@5 fell from 100% to 89%
+# and MRR from 0.65 to 0.43, because boosted summaries pushed the actual source files out
+# of the top five. The two tiers answer different questions, so they should not compete for
+# the same slots. Two summaries orient an answer; more crowd out the code.
+MAP_SLOTS = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -225,13 +227,23 @@ class Index:
                 id=cid, path=rows[cid]["path"], start_line=rows[cid]["start_line"],
                 end_line=rows[cid]["end_line"], lang=rows[cid]["lang"],
                 tier=rows[cid]["tier"], text=rows[cid]["text"],
-                score=score * TIER_WEIGHT.get(rows[cid]["tier"], 1.0),
+                score=score,
                 how="+".join(sorted(found[cid])),
             )
             for cid, score in scores.items() if cid in rows
         ]
         hits.sort(key=lambda h: -h.score)
-        return hits[:k]
+
+        out, maps = [], 0
+        for hit in hits:
+            if hit.tier == "map":
+                if maps >= MAP_SLOTS:
+                    continue
+                maps += 1
+            out.append(hit)
+            if len(out) >= k:
+                break
+        return out
 
     def file_text(self, path: str) -> str | None:
         """Reassemble a file from its chunks, for the source panel.

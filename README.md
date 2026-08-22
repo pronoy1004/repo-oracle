@@ -7,7 +7,11 @@ embeds the chunks, writes a short architectural summary of the whole repository,
 both. Then you talk to it. Every claim in an answer carries a citation, and clicking one
 opens that file at that line beside the answer.
 
-![repo-oracle](docs/screenshots/chat.png)
+![repo-oracle answering a question with clickable citations](docs/screenshots/citation.png)
+
+<sub>Answering a question about its own predecessor repo. Every green chip is a clickable
+citation; the panel on the right is the cited file opened at the cited line. The amber chips
+are the map tier.</sub>
 
 Built for the AI-FDE assignment, option 2 (code documentation assistant).
 
@@ -105,9 +109,10 @@ ingestion writes the missing documents. Three passes over a digest of the reposi
 an architecture note, a flows note and an interfaces note, and those get chunked and indexed
 alongside the code with `tier="map"`. Now the second shape has something to retrieve.
 
-Retrieval treats the map tier as slightly favoured (`TIER_WEIGHT` in `index.py`) and the
+The map tier gets two reserved slots in the retrieved set rather than a score boost, and the
 prompt tells the model to prefer source excerpts when both say the same thing, so the
-summaries orient the answer without becoming the authority. The summaries are the one part
+summaries orient the answer without becoming the authority. The reserved-slot design came
+out of the evals catching me: see [Quality](#quality). The summaries are the one part
 of the system that can be wrong in a way the code cannot, so they are marked `[map]` in the
 prompt and in the UI, and they are cheap to regenerate.
 
@@ -186,6 +191,10 @@ Two things I had to find out the hard way and would not have guessed:
   string, which is exactly what happened on my first run. `reasoning_effort="disable"` fixes
   it. This is grounded synthesis over excerpts I already retrieved, not a puzzle, so the
   thinking bought nothing and cost latency on every turn.
+- That fix then broke a different model: Gemini 2.0 Flash rejects `reasoning_effort`
+  outright. litellm's `drop_params` strips parameters a given provider will not take, which
+  is what keeps `ORACLE_MODEL` a real choice rather than the three models I happened to
+  test. Worth knowing before writing "any provider works" in a README.
 
 ### Prompt and context management
 
@@ -256,7 +265,28 @@ this set to pick the map-tier weight: I ran it at 1.0, 1.15 and 1.5 and kept the
 .venv/bin/python evals/run.py --k 5
 ```
 
-<!-- EVAL_RESULTS -->
+Current numbers, 18 questions against `pronoy1004/codebase-cartography`:
+
+```
+questions      18
+hit@5          100%
+top-1 hit      39%
+MRR            0.64
+```
+
+Top-1 at 39% with hit@5 at 100% is the expected shape and not a problem: the right file is
+always in the window, and the model reads all eight excerpts rather than only the first.
+Top-1 is what a re-ranker would move, which is why a re-ranker is first on the list of what
+I would add next.
+
+**The evals caught a bad idea of mine, which is the reason they exist.** My first design
+gave map-tier chunks a 1.15 score multiplier so the summaries would surface. Run against the
+question set, that scored hit@5 89% and MRR 0.43, down from 100% and 0.65 without the map
+tier at all. The boosted summaries were pushing real source files out of the top five. The
+fix was to stop letting the two tiers compete: map chunks get two reserved slots and code
+fills the rest. Back to 100% and 0.64, with the summaries still in the context window. I
+would not have caught that by reading answers, because the answers with the bad weighting
+still looked fine.
 
 ---
 
@@ -267,6 +297,12 @@ at 100 per minute. That is the one limit this system actually hits, and it hits 
 ingest, hard. So ingest paces itself (`ORACLE_EMBED_RPM`, default 90) instead of discovering
 the 429 halfway through a repository. On a paid key, set `ORACLE_EMBED_RPM=1500` and ingest
 gets about fifteen times faster.
+
+Generation has a separate daily cap, and I hit it while building. When it trips, the map
+passes fail and ingest finishes with tier 1 only, saying so in the progress log, and a turn
+returns the retrieved files with a note instead of an answer. Both are deliberate: degrade,
+report, keep the useful part. If you see it, either wait for the quota to reset or point
+`ORACLE_MODEL` at another model.
 
 ---
 
@@ -456,6 +492,19 @@ What I deliberately did not carry across: the agent loop. Giving the model files
 and letting it explore is the right design for writing documentation and the wrong one for
 answering a question in two seconds. Retrieval-as-a-tool-call is on the "what next" list
 above as a hybrid of the two, and that is the interesting version of this system.
+
+---
+
+## More screenshots
+
+A follow-up question, showing that "and what happens when that check fails?" was resolved
+against the previous turn before retrieval ran:
+
+![follow-up question](docs/screenshots/followup.png)
+
+Starting state, with one repository indexed:
+
+![starting state](docs/screenshots/suggestions.png)
 
 ---
 

@@ -84,6 +84,11 @@ def _kwargs(temperature: float, max_tokens: int) -> dict:
         "temperature": temperature,
         "max_tokens": max_tokens,
         "reasoning_effort": "disable",
+        # Not every model takes reasoning_effort — Gemini 2.0 Flash rejects the request
+        # outright. drop_params lets litellm strip what a given provider does not accept,
+        # which is what keeps ORACLE_MODEL a genuinely free choice rather than a list of
+        # three models I happened to test.
+        "drop_params": True,
         # Free-tier Gemini returns 503 under load often enough that one retry is the
         # difference between a working demo and a broken one.
         "num_retries": 2,

@@ -22,12 +22,18 @@ with tier 1 only. A missing summary degrades answer quality; a failed ingest hel
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 from . import llm
 from .chunk import Chunk, chunk_file, walk
 
 MAX_DIGEST_CHARS = 60_000
+# Three long-context calls back to back trip the free tier's per-minute limit. Spacing them
+# costs a minute of ingest, which nobody is watching, and turns three passes that half fail
+# into three that succeed. Set to 0 on a paid key.
+PASS_DELAY_S = float(os.environ.get("ORACLE_MAP_PASS_DELAY", "20"))
 MANIFESTS = (
     "package.json", "pyproject.toml", "requirements.txt", "go.mod", "Cargo.toml",
     "pom.xml", "build.gradle", "Gemfile", "composer.json", "setup.py", "Makefile",
@@ -119,7 +125,9 @@ def build_map(repo: Path, on_event=lambda **_: None) -> list[Chunk]:
         return []
 
     chunks: list[Chunk] = []
-    for name, instruction in PASSES.items():
+    for i, (name, instruction) in enumerate(PASSES.items()):
+        if i:
+            time.sleep(PASS_DELAY_S)
         on_event(type="map", status="running", detail=name)
         try:
             body = llm.complete(
