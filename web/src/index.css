@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@theme {
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --color-ink: #0b0d10;
+  --color-panel: #12151a;
+  --color-edge: #232830;
+  --color-dim: #8b93a1;
+  --color-accent: #5fbb90;
+}
+
+html, body, #root { height: 100%; }
+body { background: var(--color-ink); color: #e7eaee; }
+
+/* The answer is rendered markdown; these are the only bits worth styling by hand. */
+.prose-answer p { margin: 0.5rem 0; line-height: 1.65; }
+.prose-answer ul, .prose-answer ol { margin: 0.5rem 0 0.5rem 1.1rem; list-style: disc; }
+.prose-answer ol { list-style: decimal; }
+.prose-answer li { margin: 0.2rem 0; }
+.prose-answer h1, .prose-answer h2, .prose-answer h3 { font-weight: 600; margin: 0.9rem 0 0.3rem; }
+.prose-answer pre {
+  background: #0b0d10; border: 1px solid var(--color-edge); border-radius: 8px;
+  padding: 0.7rem 0.9rem; overflow-x: auto; margin: 0.6rem 0; font-size: 0.82rem;
+}
+.prose-answer code { font-family: var(--font-mono); font-size: 0.85em; }
+.prose-answer :not(pre) > code { background: #1a1f27; padding: 0.1rem 0.3rem; border-radius: 4px; }
+.prose-answer a { color: var(--color-accent); text-decoration: underline; }
+
+/* A citation is a button the renderer injects; it must look clickable and stay inline. */
+.cite {
+  font-family: var(--font-mono); font-size: 0.8em; cursor: pointer;
+  background: #16241d; color: var(--color-accent); border: 1px solid #244436;
+  padding: 0.05rem 0.35rem; border-radius: 5px; white-space: nowrap;
+}
+.cite:hover { background: #1c3129; }
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: #2a303a; border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }

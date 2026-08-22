@@ -1,0 +1,71 @@
+"""Retrieval: lexical, dense, and the fusion between them."""
+
+import numpy as np
+import pytest
+
+from repo_oracle.chunk import Chunk
+from repo_oracle.index import RRF_K, Index, fts_query
+
+
+def fake_vec(seed: int, dims: int = 8) -> list[float]:
+    rng = np.random.default_rng(seed)
+    return list(rng.random(dims).astype(float))
+
+
+@pytest.fixture
+def index(tmp_path):
+    ix = Index(tmp_path / "t.db")
+    chunks = [
+        Chunk("auth.py", 1, 20, "python", "def login(user):\n    return verify_password(user)", symbols="login"),
+        Chunk("router.py", 1, 15, "python", "def register_routes(app):\n    app.add_url_rule('/chat')"),
+        Chunk("README.md", 1, 5, "markdown", "A small service for asking questions."),
+    ]
+    ix.add(chunks, [fake_vec(i) for i in range(len(chunks))])
+    yield ix
+    ix.close()
+
+
+def test_lexical_finds_an_identifier_an_embedding_would_blur(index):
+    hits = index.search_lexical("where is register_routes defined")
+    assert hits, "FTS5 should match the identifier"
+    assert index.db.execute("SELECT path FROM chunks WHERE id=?", (hits[0],)).fetchone()[0] == "router.py"
+
+
+def test_fts_query_drops_stopwords_and_splits_identifiers():
+    query = fts_query("How does getUserById work?")
+    assert "the" not in query.lower().split('"')
+    assert '"getUserById"' in query and '"User"' in query
+
+
+def test_fts_query_of_a_pure_stopword_question_is_empty_not_broken():
+    assert fts_query("how does it do that?") == ""
+
+
+def test_dense_search_ranks_the_nearest_vector_first(index):
+    target = index.db.execute("SELECT id, vec FROM vectors ORDER BY id").fetchall()[1]
+    vec = np.frombuffer(target["vec"], dtype=np.float32)
+    assert index.search_dense(list(map(float, vec)))[0] == target["id"]
+
+
+def test_hybrid_fusion_scores_a_chunk_both_retrievers_found_above_either_alone(index):
+    hits = index.search("login verify_password", fake_vec(0), k=3)
+    assert hits[0].path == "auth.py"
+    assert hits[0].how == "dense+lexical"
+    # RRF: rank-1 in both pools beats rank-1 in one pool.
+    assert hits[0].score > 1.0 / (RRF_K + 1)
+
+
+def test_search_survives_a_question_with_no_searchable_words(index):
+    assert index.search("how does it?", None) == []
+
+
+def test_file_text_reassembles_the_original_lines(tmp_path):
+    ix = Index(tmp_path / "f.db")
+    text = "\n".join(f"line {i}" for i in range(1, 41))
+    from repo_oracle.chunk import chunk_file
+
+    chunks = chunk_file("a.txt", text)
+    ix.add(chunks, [fake_vec(i) for i in range(len(chunks))])
+    assert ix.file_text("a.txt") == text
+    assert ix.file_text("missing.txt") is None
+    ix.close()

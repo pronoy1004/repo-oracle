@@ -1,0 +1,16 @@
+services:
+  repo-oracle:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # Set GEMINI_API_KEY in a .env file next to this one, or export it.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set GEMINI_API_KEY in .env}
+      ORACLE_MODEL: ${ORACLE_MODEL:-gemini/gemini-flash-latest}
+      ORACLE_EMBED_RPM: ${ORACLE_EMBED_RPM:-90}
+      ORACLE_API_KEY: ${ORACLE_API_KEY:-}
+    volumes:
+      - indexes:/app/data
+
+volumes:
+  indexes:

@@ -1,0 +1,24 @@
+{
+  "repo": "https://github.com/pronoy1004/codebase-cartography",
+  "note": "Retrieval is scored against the files a human would open to answer each question. Small and hand-written on purpose: 18 honest questions I checked myself beat 200 generated ones nobody has read.",
+  "questions": [
+    {"q": "Where does the service refuse a git URL that is not http or https?", "expect": ["agents/codebase-cartographer/checkout.py"]},
+    {"q": "How does it stop a symlink inside the checkout from reading files outside it?", "expect": ["agents/codebase-cartographer/tools.py"]},
+    {"q": "What tools does the agent get, and why is there no bash tool?", "expect": ["agents/codebase-cartographer/tools.py", "agents/codebase-cartographer/agent.py"]},
+    {"q": "Which HTTP routes does this service add on top of agent-runtime?", "expect": ["agents/codebase-cartographer/agent.py"]},
+    {"q": "How is the result tarball built?", "expect": ["agents/codebase-cartographer/agent.py"]},
+    {"q": "What is the default model and how do I change it?", "expect": ["agents/codebase-cartographer/agent.py", "README.md"]},
+    {"q": "Where is prompt injection from the mapped repository handled?", "expect": ["agents/codebase-cartographer/agent.py"]},
+    {"q": "What does validate.py check?", "expect": ["validate.py"]},
+    {"q": "What is the maximum description length a skill may have?", "expect": ["validate.py"]},
+    {"q": "How do I run the service locally?", "expect": ["README.md", "agents/codebase-cartographer/Dockerfile"]},
+    {"q": "Which user does the container run as?", "expect": ["agents/codebase-cartographer/Dockerfile"]},
+    {"q": "How are skills loaded into the system prompt?", "expect": ["agents/codebase-cartographer/agent.py"]},
+    {"q": "What does the map-codebase skill do?", "expect": ["skills/map-codebase/SKILL.md"]},
+    {"q": "What guidance is there for drawing sequence diagrams?", "expect": ["skills/draw-diagrams/SKILL.md", "skills/draw-diagrams/references/mermaid-recipes.md"]},
+    {"q": "Where are the tests for the path safety checks?", "expect": ["agents/codebase-cartographer/test_tools.py"]},
+    {"q": "How is a local repository path allowed instead of a git URL?", "expect": ["agents/codebase-cartographer/checkout.py", "agents/codebase-cartographer/agent.py"]},
+    {"q": "What files does the pipeline write into the target repository?", "expect": ["skills/map-codebase/SKILL.md", "README.md", "agents/codebase-cartographer/agent.py"]},
+    {"q": "How does the UI stream progress from a run?", "expect": ["agents/codebase-cartographer/ui/index.html", "agents/codebase-cartographer/agent.py"]}
+  ]
+}

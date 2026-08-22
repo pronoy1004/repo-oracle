@@ -1,0 +1,6 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+litellm>=1.55
+# litellm imports tenacity lazily for num_retries and does not declare it.
+tenacity>=8.0
+numpy>=2.0
