@@ -31,6 +31,11 @@ REGISTRY = DATA_DIR / "repos.json"
 MAX_FILES = int(os.environ.get("ORACLE_MAX_FILES", "4000"))
 MAX_CHUNKS = int(os.environ.get("ORACLE_MAX_CHUNKS", "12000"))
 EMBED_CHUNK_BATCH = 96
+# A transient 429 used to kill the whole run and throw away every chunk already embedded.
+# On a 400-chunk repo that is five minutes lost; on a big one it is an hour. Batches now
+# back off and retry, and a batch that still fails ends ingest with what is already indexed
+# rather than with nothing. The waits are long because the limit being hit is per-minute.
+EMBED_BACKOFF_S = (20, 45, 90)
 SKIP_MAP = os.environ.get("ORACLE_SKIP_MAP", "").lower() in {"1", "true", "yes"}
 
 
@@ -131,10 +136,10 @@ def _run(job: Job, source: str, ref: str | None, kind: str) -> None:
         # a run was interrupted partway through.
         open_index(DATA_DIR, job.id).drop()
         index = open_index(DATA_DIR, job.id)
-        _embed_and_add(index, chunks, job, label="code")
+        complete = _embed_and_add(index, chunks, job, label="code")
 
         map_chunks: list[Chunk] = []
-        if not SKIP_MAP:
+        if not SKIP_MAP and complete:
             map_chunks = mapper.build_map(repo, on_event=job.emit)
             if map_chunks:
                 _embed_and_add(index, map_chunks, job, label="map")
@@ -142,7 +147,7 @@ def _run(job: Job, source: str, ref: str | None, kind: str) -> None:
         index.set_meta(
             source=source, ref=ref, commit=commit, files=files,
             chunks=index.count(), map_chunks=len(map_chunks),
-            embed_model=llm.EMBED_MODEL, truncated=truncated,
+            embed_model=llm.EMBED_MODEL, truncated=truncated, partial=not complete,
             indexed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         )
         total = index.count()
@@ -150,7 +155,8 @@ def _run(job: Job, source: str, ref: str | None, kind: str) -> None:
         index.close()
 
         job.status = "done"
-        job.emit(type="done", detail=f"indexed {total} chunks from {files} files")
+        note = "" if complete else " (partial: embedding was rate limited, re-ingest to finish)"
+        job.emit(type="done", detail=f"indexed {total} chunks from {files} files{note}")
     except Exception as exc:
         job.status = "error"
         job.error = f"{type(exc).__name__}: {exc}"
@@ -160,9 +166,32 @@ def _run(job: Job, source: str, ref: str | None, kind: str) -> None:
             cleanup()
 
 
-def _embed_and_add(index: Index, chunks: list[Chunk], job: Job, label: str) -> None:
+def _embed_and_add(index: Index, chunks: list[Chunk], job: Job, label: str) -> bool:
+    """Embed and index in batches. Returns False if a batch was finally abandoned.
+
+    Each batch is committed as it completes, so whatever got through is durable and the
+    repository is usable, just thinner. Re-ingesting later replaces the index and fills in
+    the rest.
+    """
     for i in range(0, len(chunks), EMBED_CHUNK_BATCH):
         batch = chunks[i : i + EMBED_CHUNK_BATCH]
-        vectors = llm.embed([c.embed_text() for c in batch])
-        index.add(batch, vectors)
+        for attempt, wait in enumerate((*EMBED_BACKOFF_S, None)):
+            try:
+                index.add(batch, llm.embed([c.embed_text() for c in batch]))
+                break
+            except Exception as exc:
+                if wait is None:
+                    job.emit(
+                        type="embed", status="partial",
+                        detail=f"{label}: gave up at {i}/{len(chunks)} after "
+                               f"{len(EMBED_BACKOFF_S)} retries ({type(exc).__name__})",
+                    )
+                    return False
+                job.emit(
+                    type="embed", status="retry",
+                    detail=f"{label}: {type(exc).__name__} at {i}/{len(chunks)}, "
+                           f"retry {attempt + 1} in {wait}s",
+                )
+                time.sleep(wait)
         job.emit(type="embed", detail=f"{label}: {min(i + len(batch), len(chunks))}/{len(chunks)}")
+    return True

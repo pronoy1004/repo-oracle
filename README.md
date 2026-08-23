@@ -8,11 +8,20 @@ Then you talk to it. Clicking a citation opens that file at that line beside the
 
 Built for the AI-FDE assignment, option 2.
 
-![repo-oracle answering a question with clickable citations](docs/screenshots/citation.png)
+![repo-oracle answering a question about psf/requests with clickable citations](docs/screenshots/citation.png)
 
-**[42-second demo video](docs/demo.mp4)**: ask, read a cited answer, open a citation, ask a
-follow-up that only makes sense in context, then ask something the repo has no answer for and
-watch it decline instead of inventing one.
+**[One-minute demo video](docs/demo.mp4)**, recorded against `psf/requests`. Five questions,
+each one covering something different:
+
+1. "How does a call to `requests.get()` end up sending an HTTP request?" The end-to-end
+   architecture shape, which is what the map tier exists for.
+2. "Where are HTTP redirects resolved?" A specific lookup, then clicking a citation to open
+   `sessions.py` at the line, then a second citation into the same file.
+3. "and how many does it allow before giving up?" A follow-up that retrieves nothing on its
+   own. It answers `max_redirects`, default 30, citing `models.py`.
+4. "How is the default User-Agent header set?" The configuration surface.
+5. "How does it handle GraphQL subscriptions?" Absent from the repo, so it says so and names
+   the search terms it would try next instead of inventing an answer.
 
 ## Quick start
 
@@ -24,8 +33,21 @@ echo "GEMINI_API_KEY=your-key" > .env
 docker compose up --build
 ```
 
-Open http://localhost:8000, paste a GitHub URL, wait for the index, ask. A repo the size of
-Flask takes about four minutes, nearly all of it the free tier's embedding rate limit.
+Open http://localhost:8000, paste a GitHub URL, wait for the index, ask. Measured on the free
+tier, where ingest time is almost entirely the embedding rate limit rather than any work this
+does:
+
+| Repo | Chunks | Files | Ingest |
+|---|---|---|---|
+| `psf/requests` | 414 | 114 | 8m03s, measured |
+| `pallets/flask` | 837 | 218 | ~15 min, extrapolated |
+| `tiangolo/fastapi` | 15,258 | 2,709 | truncated at the 12k cap, hours |
+
+Only the first row is measured end to end; the others are chunk counts from the real
+repositories with the embedding time extrapolated. A paid key with `ORACLE_EMBED_RPM=1500`
+cuts all of these by roughly fifteen times. FastAPI is
+the honest failure case: it exceeds `ORACLE_MAX_CHUNKS`, so it indexes the first 12,000 chunks
+and the UI marks the repo truncated.
 
 I have no Docker on this machine, so the image is written and reviewed but never built. The
 path below is the one I ran end to end, and every screenshot and number here came from it.

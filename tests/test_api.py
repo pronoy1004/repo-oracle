@@ -140,3 +140,56 @@ def test_reingesting_replaces_the_index_instead_of_duplicating_it(client, repo, 
     ix = open_index(ingest.DATA_DIR, second)
     assert ix.count() == before, "a refresh must replace the index, not append to it"
     ix.close()
+
+
+def test_a_transient_embed_failure_is_retried_not_fatal(client, repo, monkeypatch):
+    """One 429 mid-ingest used to kill the run and discard every chunk already embedded."""
+    from repo_oracle import ingest, llm
+
+    monkeypatch.setattr(ingest, "EMBED_BACKOFF_S", (0, 0, 0))  # no real sleeping in tests
+    calls = {"n": 0}
+    real = llm.embed
+
+    def flaky(texts, task="retrieval_document"):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("429 rate limited")
+        return real(texts, task=task)
+
+    monkeypatch.setattr(ingest.llm, "embed", flaky)
+    repo_id = ingest_fixture(client, repo, monkeypatch)
+
+    from repo_oracle.index import open_index
+
+    ix = open_index(ingest.DATA_DIR, repo_id)
+    assert ix.count() > 0, "the retry should have recovered the batch"
+    ix.close()
+    assert calls["n"] >= 2
+
+
+def test_ingest_that_finally_gives_up_keeps_what_it_indexed(client, repo, monkeypatch):
+    """A hard rate limit should leave a thinner but usable repo, not an empty failed run."""
+    from repo_oracle import ingest, llm
+
+    monkeypatch.setattr(ingest, "EMBED_BACKOFF_S", (0,))
+    monkeypatch.setattr(ingest, "EMBED_CHUNK_BATCH", 1)
+    real = llm.embed
+    calls = {"n": 0}
+
+    def dies_after_one(texts, task="retrieval_document"):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("429 rate limited")
+        return real(texts, task=task)
+
+    monkeypatch.setattr(ingest.llm, "embed", dies_after_one)
+    repo_id = ingest_fixture(client, repo, monkeypatch)
+
+    entry = next(r for r in client.get("/repos").json()["repos"] if r["id"] == repo_id)
+    assert entry["status"] == "done", "a partial ingest still completes"
+    assert entry["partial"] is True
+    from repo_oracle.index import open_index
+
+    ix = open_index(ingest.DATA_DIR, repo_id)
+    assert ix.count() > 0, "chunks embedded before the failure must survive"
+    ix.close()
