@@ -18,27 +18,34 @@ question the repo has no answer for, where it declines and names the terms it wo
 
 ## Quick start
 
-Needs Docker and a Gemini key, free from https://aistudio.google.com/apikey
+Needs a Gemini key, free from https://aistudio.google.com/apikey. This is the path I ran, and
+every number and screenshot in this file came from it:
 
 ```bash
 git clone https://github.com/pronoy1004/repo-oracle && cd repo-oracle
-echo "GEMINI_API_KEY=your-key" > .env
-docker compose up --build
-```
-
-Open http://localhost:8000, paste a GitHub URL, wait for the index, ask.
-
-I have no Docker on this machine, so the image is written and reviewed but never built. This
-is the path I actually ran, and every number and screenshot here came from it:
-
-```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 export GEMINI_API_KEY=your-key
-.venv/bin/uvicorn repo_oracle.app:app --port 8000    # API
+.venv/bin/uvicorn repo_oracle.app:app --port 8000    # API on :8000
 cd web && npm install && npm run dev                 # UI on :5173
 ```
 
+Open http://localhost:5173, paste a GitHub URL, wait for the index, ask.
+
 Tests need no key and touch no network: `.venv/bin/python -m pytest -q` (36 passing).
+
+### Docker
+
+```bash
+echo "GEMINI_API_KEY=your-key" > .env
+docker compose up --build          # everything on :8000
+```
+
+I have no Docker on this machine, so I have never run that command and will not claim I have.
+What I did verify: every `COPY` path resolves, `docker-compose.yml` parses, `npm ci` and the
+Vite build succeed from a clean clone, `requirements.txt` alone installs and the app imports
+with no dev dependencies, and `repo_oracle.app:app` plus the `web/dist` lookup both resolve
+from a different working directory. What is left unproven is the image build itself on
+`python:3.12-slim`.
 
 ### How long ingest takes
 
