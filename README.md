@@ -18,34 +18,28 @@ question the repo has no answer for, where it declines and names the terms it wo
 
 ## Quick start
 
-Needs a Gemini key, free from https://aistudio.google.com/apikey. This is the path I ran, and
-every number and screenshot in this file came from it:
+Needs Docker and a Gemini key, free from https://aistudio.google.com/apikey
 
 ```bash
 git clone https://github.com/pronoy1004/repo-oracle && cd repo-oracle
+echo "GEMINI_API_KEY=your-key" > .env
+docker compose up --build
+```
+
+Open http://localhost:8000, paste a GitHub URL, wait for the index, ask. One container, one
+port: the API serves the built UI, so there is nothing else to run and no CORS to configure.
+It runs as a non-root user and keeps its indexes in a named volume.
+
+### Without Docker
+
+```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 export GEMINI_API_KEY=your-key
 .venv/bin/uvicorn repo_oracle.app:app --port 8000    # API on :8000
-cd web && npm install && npm run dev                 # UI on :5173
+cd web && npm install && npm run dev                 # UI on :5173, proxies to the API
 ```
-
-Open http://localhost:5173, paste a GitHub URL, wait for the index, ask.
 
 Tests need no key and touch no network: `.venv/bin/python -m pytest -q` (36 passing).
-
-### Docker
-
-```bash
-echo "GEMINI_API_KEY=your-key" > .env
-docker compose up --build          # everything on :8000
-```
-
-I have no Docker on this machine, so I have never run that command and will not claim I have.
-What I did verify: every `COPY` path resolves, `docker-compose.yml` parses, `npm ci` and the
-Vite build succeed from a clean clone, `requirements.txt` alone installs and the app imports
-with no dev dependencies, and `repo_oracle.app:app` plus the `web/dist` lookup both resolve
-from a different working directory. What is left unproven is the image build itself on
-`python:3.12-slim`.
 
 ### How long ingest takes
 
@@ -88,8 +82,12 @@ flowchart LR
     E -.->|"vectors"| V
 ```
 
-More diagrams, including sequence diagrams for both flows, the module graph and the data
-model: [docs/codebase-map/diagrams.md](docs/codebase-map/diagrams.md).
+More diagrams, including a sequence diagram per flow, the module graph and the data model:
+[docs/codebase-map/diagrams.md](docs/codebase-map/diagrams.md). I generated them with
+[`draw-diagrams`](https://github.com/pronoy1004/codebase-cartography/blob/main/skills/draw-diagrams/SKILL.md),
+one of the Agent Skills from my
+[codebase-cartography](https://github.com/pronoy1004/codebase-cartography) project, pointed at
+this repo.
 
 | File | Owns |
 |---|---|
@@ -391,9 +389,10 @@ calls and a minute. From an index it costs one embedding and 300ms.
 Carried across: `checkout.py` almost verbatim, since its scheme allowlist, ref regex and path
 allowlist were already right and rewriting them would have been a way to add a bug. The path
 containment approach and its tests. The framing that repository contents are untrusted. The
-three summary prompts, condensed from its skills. The diagrams in
-[docs/codebase-map/](docs/codebase-map/diagrams.md) were produced by pointing those same
-skills at this repo.
+three summary prompts, condensed from its `map-architecture`, `trace-flows` and `map-apis`
+skills. The diagrams in [docs/codebase-map/](docs/codebase-map/diagrams.md) came from its
+[`draw-diagrams`](https://github.com/pronoy1004/codebase-cartography/blob/main/skills/draw-diagrams/SKILL.md)
+skill, pointed at this repo.
 
 Not carried across: the agent loop. Filesystem tools and exploration is right for writing
 documentation and wrong for answering in two seconds. Retrieval as a tool call is the

@@ -1,6 +1,8 @@
 # Diagrams
 
-Generated for repo-oracle at the commit named in the README. Every block renders in GitHub.
+Generated with [`draw-diagrams`](https://github.com/pronoy1004/codebase-cartography/blob/main/skills/draw-diagrams/SKILL.md),
+an Agent Skill from my [codebase-cartography](https://github.com/pronoy1004/codebase-cartography)
+project, pointed at this repo. Every block renders in GitHub.
 
 ## System components
 
